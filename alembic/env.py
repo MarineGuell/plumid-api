@@ -7,7 +7,7 @@ from alembic import context
 # --- Projet PlumID ---
 from settings import settings
 from models.base import Base
-import models  # noqa: F401 — importe tous les modèles pour que Base.metadata les connaisse
+import models
 
 config = context.config
 
