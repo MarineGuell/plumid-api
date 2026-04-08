@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  api:
+    # Overrides the command so the container doesn't exit.
+    command: /bin/sh -c "while sleep 1000; do :; done"
+    # Overrides user to root so devcontainer can install extensions and packages
+    user: "root"
+    volumes:
+      # Map the workspace to /app/api so live changes are reflected
+      - ..:/app
+      # Optional: persist bash history, etc.

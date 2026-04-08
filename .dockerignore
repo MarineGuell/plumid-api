@@ -1,0 +1,47 @@
+# api/.dockerignore
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+
+# Git & VCS
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.sqlite3
+*.db
+
+# Caches / artefacts
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# IDE / éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Config locales
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Tests (pas nécessaires dans l'image runtime)
+tests/

@@ -1,0 +1,40 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: plumid-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-plumid}
+      MYSQL_USER: ${MYSQL_USER:-plumid}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-plumid_password}
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: plumid-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-plumid}:${MYSQL_PASSWORD:-plumid_password}@db:3306/${MYSQL_DATABASE:-plumid}?charset=utf8mb4
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+
+volumes:
+  db_data:

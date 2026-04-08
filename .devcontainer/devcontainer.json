@@ -1,0 +1,20 @@
+{
+	"name": "PlumID API",
+	"dockerComposeFile": [
+		"../docker-compose.yaml",
+		"docker-compose.extend.yaml"
+	],
+	"service": "api",
+	"workspaceFolder": "/app",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"charliermarsh.ruff"
+			]
+		}
+	},
+	"remoteUser": "root",
+	"postCreateCommand": "pip install -r requirements.txt && pip install pytest"
+}
