@@ -192,24 +192,32 @@ See [`docs/migrations.md`](docs/migrations.md) for the complete guide
 
 Two mechanisms coexist:
 
-1. **API Key** — for service-to-service calls (mobile backend, model
-   service, etc.). Header: `Authorization: Bearer <PLUMID_API_KEY>`.
+1. **API Key** — for service-to-service calls (model service, internal
+   tooling). Header: `Authorization: Bearer <PLUMID_API_KEY>`.
 2. **JWT (HS256)** — for user accounts. Issued by `POST /auth/login`,
    consumed by `Authorization: Bearer <jwt>`.
 
-The mobile-app upload endpoint (`POST /upload/feather`) requires an
-HMAC signature on top of the body, with anti-replay nonces:
+The mobile-app upload endpoint (`POST /upload/feather`) is authenticated
+with the user's JWT only — no HMAC signature, no nonces. The app just
+sends:
 
 ```
-X-Timestamp: <unix-seconds>
-X-Nonce: <random-string>
-X-Signature: base64(HMAC-SHA256(APP_HMAC_SECRET,
-                                "{METHOD}|{PATH}|{TS}|{NONCE}|{SHA256(BODY)}"))
+Authorization: Bearer <jwt>
+Content-Type:  multipart/form-data; boundary=...
+
+file=@<photo.jpg>
 ```
 
 When `MODEL_SERVICE_URL` is set, the endpoint forwards the image to the
-model service and returns its prediction. Otherwise it acknowledges the
-upload and returns `prediction=null` (graceful degradation).
+model service (`POST /predict`) and relays its response:
+
+* `200` → the prediction (`species_id`, `species_name`, `confidence`, `top_k`)
+* `422` → preprocessing warning (`NO_FEATHER` or `TOO_MANY_FEATHERS`)
+  relayed verbatim so the app can display the user-facing `message`
+* `503` → model not ready yet (cold start)
+
+If `MODEL_SERVICE_URL` is empty, the endpoint returns a stub
+(`prediction: null`) to keep local development unblocked.
 
 ---
 
@@ -231,7 +239,7 @@ DELETE /feathers/{idfeathers}
 POST   /pictures
 GET    /pictures/{idpictures}
 DELETE /pictures/{idpictures}
-POST   /upload/feather       (HMAC-signed, forwarded to model service)
+POST   /upload/feather       (Bearer JWT, forwarded to model service)
 ```
 
 See `/docs` for the full interactive contract.

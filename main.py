@@ -14,10 +14,12 @@ from settings import settings
 from middlewares.tracing import install_tracing
 from middlewares.body_limit import BodySizeLimitMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
-from security.antireplay import require_signed_request
 
 from db import engine
-from models import Base
+from models import Base, Users
+
+# Auth dependency for protected endpoints
+from dependencies.auth import get_current_user
 
 # Routers
 from routes.health import router as health_router
@@ -142,25 +144,69 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 # ---------------------------------------------------------------------------
-# Exemple d'endpoint sensible signé (HMAC + anti-replay)
+# Upload d'une plume + identification par le service modèle
 # ---------------------------------------------------------------------------
-require_sig = require_signed_request(settings, _redis)
+# Authentification : Bearer JWT classique (pas de HMAC). L'app récupère
+# le token via POST /auth/login et le pose dans le header Authorization.
+#
+# Flow :
+#   1. L'app envoie l'image en multipart sur /upload/feather.
+#   2. On forwarde l'image vers le service modèle (/predict).
+#   3. Le service modèle gère le préprocessing + l'inférence et peut
+#      renvoyer :
+#        - 200 avec une prédiction → on relaye à l'app
+#        - 422 avec warning_code (NO_FEATHER / TOO_MANY_FEATHERS) → on
+#          relaye tel quel pour que l'app affiche le message à l'user
+#        - 503 si le classifier n'est pas encore prêt → on relaye 503
+#   4. Si MODEL_SERVICE_URL n'est pas configuré, on renvoie un stub pour
+#      faciliter le développement local sans le service modèle.
+# ---------------------------------------------------------------------------
 
 
-@app.post("/upload/feather", dependencies=[Depends(require_sig)])
-async def upload_feather(file: UploadFile = File(...)):
+@app.post("/upload/feather")
+async def upload_feather(
+    file: UploadFile = File(...),
+    current_user: Users = Depends(get_current_user),
+):
     """
-    Endpoint d'upload protégé par signature HMAC + nonce anti-replay.
+    Identifie l'espèce d'oiseau à partir d'une photo de plume.
 
-    - En-têtes requis côté client : X-Timestamp, X-Nonce, X-Signature
-    - Si MODEL_SERVICE_URL est défini, l'image est transmise au service modèle
-      (microservice de prétraitement / inférence) et la prédiction est renvoyée.
-    - Sinon, on renvoie simplement un accusé de réception (mode dégradé).
+    Auth : Bearer token JWT (obtenu via POST /auth/login).
+
+    Réponses
+    --------
+    200 — prédiction réussie ::
+
+        {
+          "ok": true,
+          "filename": "...",
+          "bytes": 12345,
+          "prediction": {
+            "species_id": 4,
+            "species_name": "Geai des chênes (Garrulus glandarius)",
+            "model_class": "Geai_des_chene_Passiform_garulus_glandarius",
+            "confidence": 52.38,
+            "top_k": [...],
+            ...
+          }
+        }
+
+    422 — préprocessing a rejeté l'image (pas de plume / plumes multiples) ::
+
+        {
+          "ok": false,
+          "warning_code": "NO_FEATHER" | "TOO_MANY_FEATHERS",
+          "message": "Aucune plume n'a été reconnue sur l'image..."
+        }
+
+    503 — service modèle injoignable ou pas prêt
+    502 — erreur réseau entre l'API et le service modèle
     """
     import httpx  # import local pour ne pas alourdir le démarrage
 
     content = await file.read()
 
+    # ---- Mode dégradé sans service modèle (utile pour le dev local) ----
     if not settings.model_service_url:
         log.warning(
             "MODEL_SERVICE_URL non configuré, upload_feather renvoie un stub."
@@ -170,30 +216,86 @@ async def upload_feather(file: UploadFile = File(...)):
             "filename": file.filename,
             "bytes": len(content),
             "prediction": None,
-            "detail": "MODEL_SERVICE_URL not configured",
+            "detail": "MODEL_SERVICE_URL not configured (stub mode)",
         }
 
     model_url = settings.model_service_url.rstrip("/") + "/predict"
+
     try:
         async with httpx.AsyncClient(timeout=settings.model_service_timeout) as cli:
             resp = await cli.post(
                 model_url,
                 files={
                     "file": (
-                        file.filename or "feather.png",
+                        file.filename or "feather.jpg",
                         content,
                         file.content_type or "application/octet-stream",
                     )
                 },
             )
-            resp.raise_for_status()
-            prediction: Dict[str, Any] = resp.json()
     except httpx.HTTPError as exc:
         log.exception("Appel au service modèle KO: %s", exc)
         raise HTTPException(
             status_code=502,
             detail=f"Model service unreachable: {exc!s}",
         ) from exc
+
+    # ---- 422 : préprocessing a rejeté l'image (warning code) ----
+    # On relaye proprement à l'app : même status, même body.
+    if resp.status_code == 422:
+        try:
+            warning_body = resp.json()
+        except Exception:  # noqa: BLE001
+            warning_body = {
+                "ok": False,
+                "warning_code": "UNKNOWN",
+                "message": resp.text,
+            }
+        log.info(
+            "Model preprocessing rejected the image: user=%s warning=%s",
+            current_user.idusers,
+            warning_body.get("warning_code"),
+        )
+        return JSONResponse(status_code=422, content=warning_body)
+
+    # ---- 503 : modèle pas prêt ----
+    if resp.status_code == 503:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Le service de prédiction n'est pas encore prêt. "
+                "Réessaye dans quelques secondes."
+            ),
+        )
+
+    # ---- Autres erreurs du service modèle ----
+    if resp.status_code >= 400:
+        log.error(
+            "Model service returned %d: %s",
+            resp.status_code, resp.text[:200],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model service error ({resp.status_code})",
+        )
+
+    # ---- Succès ----
+    try:
+        prediction: Dict[str, Any] = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Réponse modèle invalide: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Model service returned an invalid JSON",
+        ) from exc
+
+    log.info(
+        "predict: user=%s filename=%s species_id=%s confidence=%s",
+        current_user.idusers,
+        file.filename,
+        prediction.get("species_id"),
+        prediction.get("confidence"),
+    )
 
     return {
         "ok": True,
