@@ -18,7 +18,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Injecte l'URL de la DB depuis settings (surcharge alembic.ini)
-config.set_main_option("sqlalchemy.url", settings.db_url)
+# Preserve an already-set URL from callers like scripts/run_migrations.py.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.db_url)
 
 
 def run_migrations_offline() -> None:
